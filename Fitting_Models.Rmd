@@ -1,0 +1,411 @@
+---
+title: ""
+date: "`r Sys.Date()`"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+## Global options
+knitr::opts_chunk$set(cache = TRUE)
+```
+
+```{r}
+library(readr)
+library(tidyverse)
+library(tidymodels)
+library(kknn)
+```
+
+# **GSE 524 Lab 7**
+
+## Instructions
+
+You will submit an HTML document to Canvas as your final version.
+
+Your document should show your code chunks/cells as well as any output.
+Make sure that only relevant output is printed. Do not, for example,
+print the entire dataset in your final knitted file.
+
+Your document should also be clearly organized, so that it is easy for a
+reader to find your answers to each question.
+
+The Data In this lab, we will use medical data to predict the likelihood
+of a person experiencing an exercise-induced heart attack.
+
+Our dataset consists of clinical data from patients who entered the
+hospital complaining of chest pain ("angina") during exercise. The
+information collected includes:
+
+-age : Age of the patient
+
+-sex : Sex of the patient
+
+-cp : Chest Pain type
+
+-   Value 1: typical angina
+
+-   Value 2: atypical angina
+
+-   Value 3: non-anginal pain
+
+-   Value 4: asymptomatic trtbps : resting blood pressure (in mm Hg)
+
+-chol : cholesterol in mg/dl fetched via BMI sensor
+
+-restecg : resting electrocardiographic results
+
+-   Value 0: normal
+
+-   Value 1: having ST-T wave abnormality (T wave inversions and/or ST
+    elevation or depression of \> 0.05 mV)
+
+-   Value 2: showing probable or definite left ventricular hypertrophy
+    by Estes' criteria thalach : maximum heart rate achieved during
+    exercise
+
+-output : the doctor's diagnosis of whether the patient is at risk for a
+heart attack
+
+-   0 = not at risk of heart attack
+
+-   1 = at risk of heart attack
+
+```{r}
+ha <- read_csv("https://www.dropbox.com/s/aohbr6yb9ifmc8w/heart_attack.csv?dl=1") 
+```
+
+```{r}
+head(ha)
+summary(ha)
+
+ha <- ha %>% 
+  mutate(sex = as.factor(sex), cp = as.factor(cp), restecg = as.factor(restecg), output = as.factor(output))
+```
+
+## Part One: Fitting Models
+
+This section asks you to create a final best model for each of the model
+types studied this week. For each, you should:
+
+-   Find the best model based on roc.auc for predicting the target
+    variable.
+
+-   Output a confusion matrix; that is, the counts of how many
+    observations fell into each predicted class for each true class.
+    (Hint: Code is provided from lecture; alternatively, conf_mat is a
+    nice shortcut function for this task.)
+
+-   Report the (cross-validated!) roc.auc metric.
+
+-   Fit the final model.
+
+-   (Where applicable) Interpret the coefficients and/or estimates
+    produced by the model fit.
+
+You should certainly try multiple model recipes to find the best model.
+You do not need to include the output for every attempted model, but you
+should describe all of the models explored. You should include any hyper
+parameter tuning steps in your writeup as well.
+
+```{r}
+ha_cv <- vfold_cv(ha, v = 5)
+set.seed(10)
+
+ha_recipe1 <- recipe(output ~ sex + cp + trtbps + thalach, data = ha) %>%
+  step_normalize(all_numeric()) %>%
+  step_dummy(all_nominal(), -output)
+
+ha_recipe2 <- recipe(output ~ sex + cp + trtbps + age, data = ha) %>%
+  step_normalize(all_numeric()) %>%
+  step_dummy(all_nominal(), -output)
+
+ha_recipe3 <- recipe(output ~ cp + age + thalach + restecg,, data = ha) %>%
+  step_normalize(all_numeric()) %>%
+  step_dummy(all_nominal(), -output)
+```
+
+**Q1: KNN**
+
+```{r}
+knn_spec <- nearest_neighbor(neighbors = tune()) %>%
+  set_engine("kknn") %>%
+  set_mode("classification")
+
+k_grid <- grid_regular(neighbors(c(2, 40)), levels = 10)
+set.seed(10)
+
+knn_wflow <- workflow() %>%
+  add_model(knn_spec) %>%
+  add_recipe(ha_recipe1) 
+
+knn_wflow %>%
+  tune_grid(
+    grid = k_grid,
+    resamples = ha_cv
+  ) %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  arrange(desc(mean))
+```
+
+-   At k=31 the best roc_auc was found.
+
+```{r}
+knn_spec_final <- nearest_neighbor(neighbors = 31 ) %>%
+  set_engine("kknn") %>%
+  set_mode("classification")
+
+knn_wflow <- workflow() %>%
+  add_model(knn_spec_final) %>%
+  add_recipe(ha_recipe1) 
+
+knn_final <- knn_wflow %>% fit(ha)
+
+knn_preds <- predict(knn_final, ha)
+
+ha %>%
+  mutate(
+   preds = knn_preds$.pred_class 
+  ) %>%
+  count(preds, output)
+```
+
+-   Recipe 1 had the highest auc and roc_auc when compared to the other
+    recipes.
+
+**Q2: Logistic Regression**
+
+```{r}
+lr_spec <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+lr_wflow <- workflow() %>%
+  add_model(lr_spec) %>%
+  add_recipe(ha_recipe1) 
+
+lr_wflow %>%
+  fit_resamples(ha_cv) %>%
+  collect_metrics()
+```
+
+-   The cross-validated roc_auc was found to be around 0.85.
+
+```{r}
+lr_final <- lr_wflow %>% fit(ha)
+
+lr_preds <- predict(lr_final, ha)
+
+ha %>%
+  mutate(
+   preds = lr_preds$.pred_class 
+  ) %>%
+  count(preds, output)
+
+lr_fit <- lr_final %>% pull_workflow_fit()
+
+lr_fit$fit %>% summary()
+```
+
+- For every 1 unit increase in resting blood pressure, the log-odds of being in the heart attack risk group decrease by 0.45.
+
+-For every 1 unit increase in maximum heart rate achieved during
+exercise, the log-odds of being in the heart attack risk group increase
+by 0.86.
+
+-Male patients have a 1.95 lower log-odds of being in the heart attack
+risk group on average. This means the odds for males are 5.8 times as
+high as for females.
+
+-Chest Pain category 1 have 2.26 higher log-odds of having a risk of
+heart attack on average Chest Pain category 2 have 2.12 higher log-odds
+of having a risk of heart attack on average Chest Pain category 3 have
+1.93 higher log-odds of having a risk of heart attack on average
+
+**Q3: Interpretation**
+
+Which predictors were most important to predicting heart attack risk?
+
+-   CP is the most important in prediciting heart attack risk followed
+    by sex
+
+**Q4: ROC**
+
+Curve Plot the ROC Curve for your two models above.
+
+```{r}
+ha %>%
+  mutate(
+    preds = predict(knn_final, ha, type = "prob")$.pred_0
+  ) %>%
+  roc_curve(
+    truth = output,
+    preds
+  ) %>%
+  autoplot()
+```
+
+```{r}
+ha %>%
+  mutate(
+    preds = predict(lr_final, ha, type = "prob")$.pred_0
+  ) %>%
+  roc_curve(
+    truth = output,
+    preds
+  ) %>%
+  autoplot()
+```
+
+## Part Two: Metrics
+
+Consider the following metrics:
+
+-   True Positive Rate or Recall or Sensitivity = Of the observations
+    that are truly Class A, how many were predicted to be Class A?
+
+-   Precision or Positive Predictive Value = Of all the observations
+    classified as Class A, how many of them were truly from Class A?
+
+-   True Negative Rate or Specificity or Negative Predictive Value = Of
+    all the observations classified as NOT Class A, how many were truly
+    NOT Class A?
+
+Compute each of these metrics (cross-validated) for your four models in
+Part One.
+
+```{r}
+knn_wflow %>%
+  fit_resamples(ha_cv,
+                metrics = metric_set(precision, recall, specificity, accuracy)) %>%
+  collect_metrics()
+```
+
+```{r}
+lr_wflow %>%
+  fit_resamples(ha_cv,
+                metrics = metric_set(precision, recall, specificity, accuracy)) %>%
+  collect_metrics()
+```
+
+## Part Three: Discussion
+
+Suppose you have been hired by a hospital to create classification
+models for heart attack risk.
+
+The following questions give a possible scenario for why the hospital is
+interested in these models. For each one, discuss:
+
+-   Which metric(s) you would use for model selection and why.
+
+-   Which of your final models (Part One Q1-4) you would recommend to
+    the hospital, and why.
+
+-   What score you should expect for your chosen metric(s) using your
+    chosen model to predict future observations.
+
+**Q1**
+
+The hospital faces severe lawsuits if they deem a patient to be low
+risk, and that patient later experiences a heart attack.
+
+-   Metric: Recall would be the metric in this case, since it tells us
+    the number of successful predictions
+-   Model: I would use the Knn model since it had the highest recall.
+-   Score: We expect a high recall score using the Knn model.
+
+**Q2**
+
+The hospital is overfull, and wants to only use bed space for patients
+most in need of monitoring due to heart attack risk.
+
+-   Metric: Precision or Specificity would be the metric in this case,
+    since these identify false positives best where a not at risk
+    patient is identified as as risk
+-   Model: I would use the Knn model since it had the highest
+    precision/specificity.
+-   Score: We expect a high specificity score using the Knn model.
+
+**Q3**
+
+The hospital is studying root causes of heart attacks, and would like to
+understand which biological measures are associated with heart attack
+risk.
+
+-   Metric: Roc_Auc would be the metric in this case, since it tells us
+    how the model performed overall.
+-   Model: I would use the log model since it has better
+    interpretability.
+-   Score: We expect a high Roc_Auc score using the logistic reg model.
+
+**Q4**
+
+The hospital is training a new batch of doctors, and they would like to
+compare the diagnoses of these doctors to the predictions given by the
+algorithm to measure the ability of new doctors to diagnose patients.
+
+-   Metric: Accuracy would be the metric in this case, since it tells us
+    how often the model was correct.
+-   Model: I would use the Knn model since it had the highest accuracy
+-   Score: We expect a high accuracy score using the Knn model.
+
+## Part Four: Validation
+
+Before sharing the dataset with you, I set aside a random 10% of the
+observations to serve as a final validation set.
+
+```{r}
+ha_validation <- read_csv("https://www.dropbox.com/s/jkwqdiyx6o6oad0/heart_attack_validation.csv?dl=1")
+```
+
+```{r}
+ha_validation <- ha_validation %>%
+  mutate(
+    sex = factor(sex),
+    cp = factor(cp),
+    restecg = factor(restecg),
+    output = factor(output)
+  ) %>%
+  drop_na()
+```
+
+Use each of your final models in Part One Q1-2, predict the target
+variable in the validation dataset.
+
+```{r}
+ha_validation <- ha_validation %>%
+  mutate(
+    knn_pred = predict(knn_final, ha_validation)$.pred_class,
+    knn_pred_prob = predict(knn_final, ha_validation, type = "prob")$.pred_0,
+    lr_pred = predict(lr_final, ha_validation)$.pred_class,
+    lr_pred_prob = predict(lr_final, ha_validation, type = "prob")$.pred_0
+  )
+```
+
+For each, output a confusion matrix, and report the roc.auc, the
+precision, and the recall.
+
+```{r}
+my_metrics <- metric_set(roc_auc, precision, recall)
+
+ha_validation %>%
+  my_metrics(truth = output, knn_pred_prob, estimate = knn_pred) 
+
+ha_validation %>%
+  my_metrics(truth = output, lr_pred_prob, estimate = lr_pred) 
+```
+
+Compare these values to the cross-validated estimates you reported in
+Part One and Part Two. Did our measure of model success turn out to be
+approximately correct for the validation data?
+
+Our measure of model success was approximately correct for the
+validation data as well, as the values were quite similar for both
+models. In both models we saw, the precision being somewhat lower than
+the cross validated estimates while recall and roc_auc were generally
+slightly higher than the cross validated estimates.

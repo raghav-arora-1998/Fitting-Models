@@ -1,0 +1,143 @@
+---
+title: ""
+date: "`r Sys.Date()`"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+---
+
+```{r setup, include=FALSE}
+## Global options
+knitr::opts_chunk$set(cache = TRUE)
+```
+
+```{r}
+library(readr)
+library(tidyverse)
+library(tidymodels)
+library(kknn)
+library(psych)
+```
+
+```{r}
+ha <- read_csv("https://www.dropbox.com/s/aohbr6yb9ifmc8w/heart_attack.csv?dl=1")
+```
+
+```{r}
+ha <- ha %>%
+  mutate(
+    sex = factor(sex),
+    cp = factor(cp),
+    restecg = factor(restecg),
+    output = factor(output)
+  ) %>%
+  drop_na()
+```
+
+```{r}
+hacv <- vfold_cv(ha, v = 15)
+set.seed(10)
+
+recipe1 <- recipe(output ~ cp + trtbps + chol + restecg, data = ha) %>% 
+  step_normalize(all_numeric())
+
+recipe2 <- recipe(output ~ cp + trtbps + sex + age, data = ha) %>% 
+  step_normalize(all_numeric())
+
+recipe3 <- recipe(output ~ cp + age + thalach + restecg, data = ha) %>% 
+  step_normalize(all_numeric())
+```
+
+```{r}
+knn <- nearest_neighbor(neighbors = tune()) %>% 
+  set_engine("kknn") %>% 
+  set_mode("classification")
+
+knn_wflow <- workflow() %>% 
+  add_model(knn) %>% 
+  add_recipe(recipe2)
+
+#k_grid = data.frame(k = seq(2, 30, by = 2))
+k_grid <- grid_regular(neighbors(c(2, 50)), levels = 10)
+set.seed(7)
+
+knn_k <- knn_wflow %>% 
+  tune_grid(resamples = hacv,
+            grid = k_grid)
+
+knn_k %>% show_best('roc_auc') 
+```
+
+```{r}
+knn1 <- nearest_neighbor(neighbors = 44) %>% 
+  set_engine("kknn") %>% 
+  set_mode("classification")
+
+knn_wflow <- workflow() %>% 
+  add_model(knn1) %>% 
+  add_recipe(recipe2)
+
+knn_fit <- knn_wflow %>% 
+  fit_resamples(hacv)
+
+
+#knn_fit %>% collect_metrics()
+
+knn_fit <- knn_wflow %>% 
+  fit(ha)
+
+preds <- knn_fit %>% 
+   predict(ha)
+
+ha_knn_pred <- ha %>% 
+   mutate(prediction = preds$.pred_class)
+```
+
+```{r}
+cohen.kappa(x=cbind(ha_knn_pred$prediction, ha_knn_pred$output))
+```
+
+Cohen’s Kappa turns out to be 0.52 for recipe1 which means based on the table we would say that the two raters only had a “moderate” level of agreement.
+
+Cohen’s Kappa turns out to be 0.66 for recipe2 which means based on the table we would say that the two raters only had a “substantial” level of agreement.
+
+Cohen’s Kappa turns out to be 0.5 for recipe3 which means based on the table we would say that the two raters only had a “substantial” level of agreement.
+
+No the decision still remains the same for KNN. Recipe2 still has better metrics than others
+
+```{r}
+log <- logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+
+log_wflow <- workflow() %>% 
+  add_model(log) %>% 
+  add_recipe(recipe3)
+
+log_wflow %>% 
+  fit_resamples(hacv)
+
+log_fit <- log_wflow %>% 
+  fit(ha)
+
+log_pred <- predict(log_fit, ha)
+
+log_ha <- ha %>% 
+  mutate(preds = log_pred$.pred_class)
+
+logmodel_fit <- log_fit %>% pull_workflow_fit()
+
+logmodel_fit$fit %>% summary()
+```
+
+```{r}
+cohen.kappa(x=cbind(log_ha$preds, log_ha$output))
+```
+
+Cohen’s Kappa turns out to be 0.5 for recipe1 which means based on the table we would say that the two raters only had a “substantial” level of agreement.
+
+Cohen’s Kappa turns out to be 0.58 for recipe2 which means based on the table we would say that the two raters only had a “substantial” level of agreement.
+
+Cohen’s Kappa turns out to be 0.51 for recipe3 which means based on the table we would say that the two raters only had a “substantial” level of agreement.
+
+No the decision still remains the same for Logistic Regression. Recipe2 still has better metrics than others
